@@ -2,17 +2,16 @@ name: Hacker News to Discord
 
 on:
   schedule:
-    - cron: "0 9 * * *"
+    - cron: "0 9 * * *"  # Executa todo dia às 09:00 UTC
   workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
-  # Configuráveis, você pode substituir no Secrets ou Environment
   NEWS_COUNT: 5           # Quantidade de notícias a enviar
-  EMBED_COLOR: 16737843   # Cor da embed em decimal (default laranja #FF6600)
-  TIMEZONE: "UTC"         # Fuso horário para timestamp
+  EMBED_COLOR: 16737843   # Cor laranja do Hacker News em decimal (#FF6600)
+  TIMEZONE: "UTC"         # Fuso horário para o timestamp
 
 jobs:
   send-news:
@@ -29,8 +28,7 @@ jobs:
           python-version: "3.x"
 
       - name: Install dependencies
-        run: |
-          pip install httpx pytz
+        run: pip install httpx pytz
 
       - name: Validate Discord webhook URL
         run: |
@@ -65,13 +63,13 @@ jobs:
               print(f"[{now}] {msg}")
 
           async def fetch_json(client, url, retries=3):
-              for attempt in range(1, retries+1):
+              for attempt in range(1, retries + 1):
                   try:
                       resp = await client.get(url, timeout=10)
                       resp.raise_for_status()
                       return resp.json()
                   except Exception as e:
-                      log(f"⚠️ Tentativa {attempt} falhou para {url}: {e}")
+                      log(f"⚠️ Attempt {attempt} failed for {url}: {e}")
                       if attempt == retries:
                           return None
                       await asyncio.sleep(1)
@@ -90,10 +88,10 @@ jobs:
                   if resp.status_code == 200:
                       return True
                   else:
-                      log(f"❌ Webhook URL inválido ou inacessível: Status {resp.status_code}")
+                      log(f"❌ Webhook URL invalid or unreachable: Status {resp.status_code}")
                       return False
               except Exception as e:
-                  log(f"❌ Erro ao validar webhook URL: {e}")
+                  log(f"❌ Error validating webhook URL: {e}")
                   return False
 
           def build_embed(stories):
@@ -101,11 +99,13 @@ jobs:
               current_time = datetime.now(tz).strftime("%d/%m/%Y %H:%M %Z")
 
               embed = {
-                  "title": "📰 Top Notícias do Hacker News",
+                  "title": "📰 Hacker News — Top 5 do Dia",
+                  "description": "Confira as principais notícias do dia direto do Hacker News. 🚀",
                   "url": "https://news.ycombinator.com/",
                   "color": EMBED_COLOR,
                   "footer": {
-                      "text": f"Atualizado em {current_time}"
+                      "text": f"Atualizado em {current_time} • Powered by GitHub Actions",
+                      "icon_url": "https://news.ycombinator.com/favicon.ico"
                   },
                   "fields": []
               }
@@ -118,15 +118,20 @@ jobs:
                   author = story.get("by", "desconhecido")
                   score = story.get("score", "N/A")
                   comments = story.get("descendants", 0)
+                  timestamp = story.get("time")
+                  if timestamp:
+                      pub_date = datetime.fromtimestamp(timestamp, tz).strftime("%d/%m/%Y %H:%M")
+                  else:
+                      pub_date = "Data desconhecida"
 
-                  # Limita título para evitar erro no Discord
                   if len(title) > 256:
                       title = title[:253] + "..."
 
                   value = (
-                      f"[Link da notícia]({url})\n"
-                      f"Autor: **{author}**\n"
-                      f"Pontos: **{score}** | Comentários: **{comments}**"
+                      f"[🔗 Acessar notícia]({url})\n"
+                      f"👤 Autor: **{author}**\n"
+                      f"⭐ Pontos: **{score}** | 💬 Comentários: **{comments}**\n"
+                      f"📅 Publicado em: {pub_date}"
                   )
 
                   embed["fields"].append({
