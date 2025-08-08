@@ -2,12 +2,12 @@ name: Hacker News to Discord
 
 on:
   schedule:
-    - cron: "0 9 * * *" # 09:00 UTC todo dia (ajuste se quiser outro horário)
+    - cron: "0 9 * * *"  # Todo dia às 09:00 UTC
   workflow_dispatch:
 
 jobs:
   send-news:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # Pode trocar para self-hosted se quiser
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -25,25 +25,27 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           python << 'EOF'
+          import os
           import requests
 
-          # Busca top stories
+          webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+          if not webhook_url:
+              raise Exception("DISCORD_WEBHOOK_URL não definido")
+
           top_stories = requests.get("https://hacker-news.firebaseio.com/v0/topstories.json").json()[:5]
           mensagens = []
 
           for story_id in top_stories:
               story = requests.get(f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json").json()
-              mensagens.append(f"**{story.get('title')}**\n{story.get('url', 'Sem link')}\n")
+              title = story.get('title', 'Sem título')
+              url = story.get('url', f"https://news.ycombinator.com/item?id={story_id}")
+              mensagens.append(f"**{title}**\n{url}\n")
 
           payload = {
               "content": "📰 **Top Hacker News do dia:**\n\n" + "\n".join(mensagens)
           }
 
-          resp = requests.post(
-              url="${{ secrets.DISCORD_WEBHOOK_URL }}",
-              json=payload
-          )
-
+          resp = requests.post(url=webhook_url, json=payload)
           resp.raise_for_status()
           print("✅ Notícias enviadas com sucesso!")
           EOF
