@@ -2,7 +2,7 @@ name: Hacker News to Discord
 
 on:
   schedule:
-    - cron: "0 9 * * *"  # Executa todo dia às 09:00 UTC
+    - cron: "0 9 * * *"  # Roda todo dia às 09:00 UTC
   workflow_dispatch:
 
 permissions:
@@ -10,9 +10,12 @@ permissions:
 
 jobs:
   send-news:
-    runs-on: ubuntu-latest  # Ou 'ubuntu-latest' se quiser rodar no GitHub
+    runs-on: ubuntu-latest  # Usa runner hospedado pelo GitHub
+    environment: production  # Coloque o nome do seu environment que tem o secret
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -22,11 +25,19 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Envia Hacker News para Discord
+      - name: Validate Discord webhook env
+        run: |
+          if [ -z "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
+            echo "❌ DISCORD_WEBHOOK_URL não definido!"
+            exit 1
+          fi
+          echo "✅ DISCORD_WEBHOOK_URL definido."
+
+      - name: Send Hacker News to Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          python <<EOF
+          python << EOF
           import os
           import requests
 
@@ -44,9 +55,7 @@ jobs:
               mensagens.append(f"**{title}**\n{url}\n")
 
           payload = {
-              "content": "📰 **Top Hacker News do dia:**\n\n" + "\n".join(mensagens),
-              "allowed_mentions": {},
-              "flags": 4  # Desativa embeds e previews
+              "content": "📰 **Top Hacker News do dia:**\n\n" + "\n".join(mensagens)
           }
 
           resp = requests.post(url=webhook_url, json=payload)
