@@ -2,12 +2,12 @@ name: Hacker News to Discord
 
 on:
   schedule:
-    - cron: "0 9 * * *"  # Todo dia às 09:00 UTC
+    - cron: "0 9 * * *"  # Roda todo dia 9h UTC
   workflow_dispatch:
 
 jobs:
   send-news:
-    runs-on: ubuntu-latest  # Pode trocar para self-hosted se quiser
+    runs-on: ubuntu-latest  # Use runner oficial para garantir acesso a secrets
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -19,6 +19,11 @@ jobs:
 
       - name: Install dependencies
         run: pip install requests
+
+      - name: Verificar segredo (debug)
+        run: echo "DISCORD_WEBHOOK_URL length: ${#DISCORD_WEBHOOK_URL}"
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
       - name: Send Hacker News to Discord
         env:
