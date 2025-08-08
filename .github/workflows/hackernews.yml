@@ -2,39 +2,63 @@ name: Hacker News to Discord
 
 on:
   schedule:
-    - cron: "0 9 * * *" # todo dia 09:00 UTC
+    - cron: "0 9 * * *"  # Roda todo dia às 09:00 UTC
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   send-news:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # ou self-hosted, se preferir
+    environment: production  # <=== Aqui coloca o nome exato do seu environment com o secret
 
     steps:
-      - name: Validate Discord webhook
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Validate Discord webhook env
         run: |
           if [ -z "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
-            echo "Error: DISCORD_WEBHOOK_URL is not set!"
+            echo "❌ DISCORD_WEBHOOK_URL não definido!"
             exit 1
           fi
-          echo "Discord webhook configuration validated."
+          echo "✅ DISCORD_WEBHOOK_URL definido."
 
-      - name: Fetch top Hacker News and send to Discord
+      - name: Send Hacker News to Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          TOP_STORIES=$(curl -s https://hacker-news.firebaseio.com/v0/topstories.json | jq '.[0:5]')
-          MESSAGES="📰 **Top Hacker News do dia:**\n\n"
+          python << EOF
+          import os
+          import requests
 
-          for ID in $(echo "$TOP_STORIES" | jq -r '.[]'); do
-            STORY=$(curl -s "https://hacker-news.firebaseio.com/v0/item/$ID.json")
-            TITLE=$(echo "$STORY" | jq -r '.title // "Sem título"')
-            URL=$(echo "$STORY" | jq -r '.url // ("https://news.ycombinator.com/item?id="+(.id|tostring))')
-            MESSAGES+="**$TITLE**\n$URL\n\n"
-          done
+          webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+          if not webhook_url:
+              raise Exception("❌ DISCORD_WEBHOOK_URL não definido.")
 
-          ESCAPED_MESSAGE=$(echo -e "$MESSAGES" | sed ':a;N;$!ba;s/\n/\\n/g')
+          top_stories = requests.get("https://hacker-news.firebaseio.com/v0/topstories.json").json()[:5]
+          mensagens = []
 
-          curl -H "Content-Type: application/json" \
-               -X POST \
-               -d "{\"content\": \"$ESCAPED_MESSAGE\"}" \
-               "$DISCORD_WEBHOOK_URL"
+          for story_id in top_stories:
+              story = requests.get(f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json").json()
+              title = story.get('title', 'Sem título')
+              url = story.get('url', f"https://news.ycombinator.com/item?id={story_id}")
+              mensagens.append(f"**{title}**\n{url}\n")
+
+          payload = {
+              "content": "📰 **Top Hacker News do dia:**\n\n" + "\n".join(mensagens)
+          }
+
+          resp = requests.post(url=webhook_url, json=payload)
+          resp.raise_for_status()
+          print("✅ Notícias enviadas com sucesso!")
+          EOF
