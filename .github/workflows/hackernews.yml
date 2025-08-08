@@ -2,7 +2,7 @@ name: Hacker News to Discord
 
 on:
   schedule:
-    - cron: "0 9 * * *"  # Roda todo dia às 09:00 UTC
+    - cron: "0 9 * * *"  # Executa todo dia às 09:00 UTC
   workflow_dispatch:
 
 permissions:
@@ -10,55 +10,130 @@ permissions:
 
 jobs:
   send-news:
-    runs-on: ubuntu-latest  # Usa runner hospedado pelo GitHub
-    environment: production  # Coloque o nome do seu environment que tem o secret
+    runs-on: ubuntu-latest
+    environment: production
 
     steps:
-      - name: Checkout repo
+      - name: Checkout do repositório
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Configurar Python 3.x
         uses: actions/setup-python@v5
         with:
           python-version: "3.x"
 
-      - name: Install dependencies
+      - name: Instalar dependências
         run: pip install requests
 
-      - name: Validate Discord webhook env
+      - name: Validar variável DISCORD_WEBHOOK_URL
         run: |
           if [ -z "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
-            echo "❌ DISCORD_WEBHOOK_URL não definido!"
+            echo "::error::❌ Variável DISCORD_WEBHOOK_URL não configurada. Abortando."
             exit 1
           fi
-          echo "✅ DISCORD_WEBHOOK_URL definido."
+          echo "✅ Variável DISCORD_WEBHOOK_URL encontrada."
 
-      - name: Send Hacker News to Discord
+      - name: Enviar top 5 notícias do Hacker News para Discord (embed)
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          python << EOF
+          python << 'EOF'
           import os
           import requests
+          from datetime import datetime
 
-          webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
-          if not webhook_url:
-              raise Exception("❌ DISCORD_WEBHOOK_URL não definido.")
+          WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+          if not WEBHOOK_URL:
+              raise Exception("❌ Variável DISCORD_WEBHOOK_URL não definida.")
 
-          top_stories = requests.get("https://hacker-news.firebaseio.com/v0/topstories.json").json()[:5]
-          mensagens = []
+          def get_top_stories(limit=5):
+              try:
+                  response = requests.get("https://hacker-news.firebaseio.com/v0/topstories.json", timeout=10)
+                  response.raise_for_status()
+                  return response.json()[:limit]
+              except Exception as e:
+                  raise RuntimeError(f"Erro ao buscar IDs das notícias: {e}")
 
-          for story_id in top_stories:
-              story = requests.get(f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json").json()
-              title = story.get('title', 'Sem título')
-              url = story.get('url', f"https://news.ycombinator.com/item?id={story_id}")
-              mensagens.append(f"**{title}**\n{url}\n")
+          def get_story_details(story_id):
+              try:
+                  resp = requests.get(f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json", timeout=10)
+                  resp.raise_for_status()
+                  return resp.json()
+              except Exception as e:
+                  print(f"⚠️ Erro ao buscar detalhes da notícia {story_id}: {e}")
+                  return None
 
-          payload = {
-              "content": "📰 **Top Hacker News do dia:**\n\n" + "\n".join(mensagens)
-          }
+          def build_discord_embed(stories):
+              current_date = datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
 
-          resp = requests.post(url=webhook_url, json=payload)
-          resp.raise_for_status()
-          print("✅ Notícias enviadas com sucesso!")
+              embed = {
+                  "title": "📰 Top 5 Notícias do Hacker News",
+                  "url": "https://news.ycombinator.com/",
+                  "color": 0xFF6600,  # Cor laranja do Hacker News
+                  "footer": {
+                      "text": f"Atualizado em {current_date}"
+                  },
+                  "fields": []
+              }
+
+              for story in stories:
+                  if not story:
+                      continue
+                  title = story.get("title", "Sem título")
+                  url = story.get("url") or f"https://news.ycombinator.com/item?id={story.get('id')}"
+                  author = story.get("by", "desconhecido")
+                  score = story.get("score", "N/A")
+                  comments = story.get("descendants", 0)
+
+                  field_value = (
+                      f"[Link da notícia]({url})\n"
+                      f"Autor: **{author}**\n"
+                      f"Pontos: **{score}** | Comentários: **{comments}**"
+                  )
+
+                  # Limitar título a 256 chars para Discord
+                  field_title = title if len(title) <= 256 else title[:253] + "..."
+
+                  embed["fields"].append({
+                      "name": field_title,
+                      "value": field_value,
+                      "inline": False
+                  })
+
+              return embed
+
+          def send_to_discord(webhook_url, embed):
+              payload = {
+                  "embeds": [embed]
+              }
+              response = requests.post(webhook_url, json=payload)
+              try:
+                  response.raise_for_status()
+                  print("✅ Mensagem enviada para o Discord com sucesso!")
+              except Exception as e:
+                  raise RuntimeError(f"Erro ao enviar mensagem para o Discord: {e}")
+
+          def main():
+              print("🔍 Buscando top stories do Hacker News...")
+              top_story_ids = get_top_stories()
+
+              stories = []
+              for sid in top_story_ids:
+                  story = get_story_details(sid)
+                  if story:
+                      stories.append(story)
+
+              if not stories:
+                  print("⚠️ Nenhuma notícia válida encontrada.")
+                  return
+
+              embed = build_discord_embed(stories)
+              send_to_discord(WEBHOOK_URL, embed)
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception as error:
+                  print(f"❌ Falha ao executar script: {error}")
+                  exit(1)
           EOF
