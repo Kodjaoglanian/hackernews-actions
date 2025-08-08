@@ -2,7 +2,7 @@ name: Hacker News to Discord
 
 on:
   schedule:
-    - cron: "0 9 * * *" # 09:00 UTC todo dia
+    - cron: "0 9 * * *" # todo dia 09:00 UTC
   workflow_dispatch:
 
 jobs:
@@ -10,43 +10,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Validate Discord webhook
+        run: |
+          if [ -z "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
+            echo "Error: DISCORD_WEBHOOK_URL is not set!"
+            exit 1
+          fi
+          echo "Discord webhook configuration validated."
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
-      - name: Install dependencies
-        run: pip install requests
-
-      - name: Send Hacker News to Discord
+      - name: Fetch top Hacker News and send to Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          python <<EOF
-          import os
-          import requests
+          TOP_STORIES=$(curl -s https://hacker-news.firebaseio.com/v0/topstories.json | jq '.[0:5]')
+          MESSAGES="📰 **Top Hacker News do dia:**\n\n"
 
-          webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
-          if not webhook_url:
-              raise Exception("❌ DISCORD_WEBHOOK_URL não definido.")
+          for ID in $(echo "$TOP_STORIES" | jq -r '.[]'); do
+            STORY=$(curl -s "https://hacker-news.firebaseio.com/v0/item/$ID.json")
+            TITLE=$(echo "$STORY" | jq -r '.title // "Sem título"')
+            URL=$(echo "$STORY" | jq -r '.url // ("https://news.ycombinator.com/item?id="+(.id|tostring))')
+            MESSAGES+="**$TITLE**\n$URL\n\n"
+          done
 
-          top_stories = requests.get("https://hacker-news.firebaseio.com/v0/topstories.json").json()[:5]
-          messages = []
+          ESCAPED_MESSAGE=$(echo -e "$MESSAGES" | sed ':a;N;$!ba;s/\n/\\n/g')
 
-          for story_id in top_stories:
-              story = requests.get(f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json").json()
-              title = story.get("title", "Sem título")
-              url = story.get("url", f"https://news.ycombinator.com/item?id={story_id}")
-              messages.append(f"**{title}**\n{url}\n")
-
-          payload = {
-              "content": "📰 **Top Hacker News do dia:**\n\n" + "\n".join(messages)
-          }
-
-          response = requests.post(webhook_url, json=payload)
-          response.raise_for_status()
-          print("✅ Notícias enviadas com sucesso!")
-          EOF
+          curl -H "Content-Type: application/json" \
+               -X POST \
+               -d "{\"content\": \"$ESCAPED_MESSAGE\"}" \
+               "$DISCORD_WEBHOOK_URL"
