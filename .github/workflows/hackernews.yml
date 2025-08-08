@@ -2,30 +2,26 @@ name: Hacker News to Discord
 
 on:
   schedule:
-    - cron: "0 9 * * *"  # Roda todo dia 9h UTC
+    - cron: "0 9 * * *"  # Todo dia às 09:00 UTC
   workflow_dispatch:
 
 jobs:
   send-news:
-    runs-on: ubuntu-latest  # Use runner oficial para garantir acesso a secrets
+    runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: '3.x'
 
       - name: Install dependencies
         run: pip install requests
 
-      - name: Verificar segredo (debug)
-        run: echo "DISCORD_WEBHOOK_URL length: ${#DISCORD_WEBHOOK_URL}"
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-
-      - name: Send Hacker News to Discord
+      - name: Send Hacker News top stories to Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
@@ -33,24 +29,25 @@ jobs:
           import os
           import requests
 
-          webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+          webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
           if not webhook_url:
-              raise Exception("DISCORD_WEBHOOK_URL não definido")
+              raise Exception("❌ DISCORD_WEBHOOK_URL não definido.")
 
-          top_stories = requests.get("https://hacker-news.firebaseio.com/v0/topstories.json").json()[:5]
-          mensagens = []
+          # Pega os top 5 IDs das histórias do Hacker News
+          top_stories_ids = requests.get("https://hacker-news.firebaseio.com/v0/topstories.json").json()[:5]
+          messages = []
 
-          for story_id in top_stories:
+          for story_id in top_stories_ids:
               story = requests.get(f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json").json()
-              title = story.get('title', 'Sem título')
-              url = story.get('url', f"https://news.ycombinator.com/item?id={story_id}")
-              mensagens.append(f"**{title}**\n{url}\n")
+              title = story.get("title", "Sem título")
+              url = story.get("url", f"https://news.ycombinator.com/item?id={story_id}")
+              messages.append(f"**{title}**\n{url}\n")
 
           payload = {
-              "content": "📰 **Top Hacker News do dia:**\n\n" + "\n".join(mensagens)
+              "content": "📰 **Top Hacker News do dia:**\n\n" + "\n".join(messages)
           }
 
-          resp = requests.post(url=webhook_url, json=payload)
-          resp.raise_for_status()
+          response = requests.post(webhook_url, json=payload)
+          response.raise_for_status()
           print("✅ Notícias enviadas com sucesso!")
           EOF
