@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   send-news:
-    runs-on: self-hosted  # Ou 'ubuntu-latest' se quiser rodar no GitHub
+    runs-on: ubuntu-latest  # Ou 'ubuntu-latest' se quiser rodar no GitHub
     steps:
       - uses: actions/checkout@v4
 
