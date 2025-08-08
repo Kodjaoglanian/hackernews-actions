@@ -2,11 +2,17 @@ name: Hacker News to Discord
 
 on:
   schedule:
-    - cron: "0 9 * * *"  # Executa todo dia às 09:00 UTC
+    - cron: "0 9 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  # Configuráveis, você pode substituir no Secrets ou Environment
+  NEWS_COUNT: 5           # Quantidade de notícias a enviar
+  EMBED_COLOR: 16737843   # Cor da embed em decimal (default laranja #FF6600)
+  TIMEZONE: "UTC"         # Fuso horário para timestamp
 
 jobs:
   send-news:
@@ -14,64 +20,92 @@ jobs:
     environment: production
 
     steps:
-      - name: Checkout do repositório
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Configurar Python 3.x
+      - name: Setup Python 3.x
         uses: actions/setup-python@v5
         with:
           python-version: "3.x"
 
-      - name: Instalar dependências
-        run: pip install requests
+      - name: Install dependencies
+        run: |
+          pip install httpx pytz
 
-      - name: Validar variável DISCORD_WEBHOOK_URL
+      - name: Validate Discord webhook URL
         run: |
           if [ -z "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
-            echo "::error::❌ Variável DISCORD_WEBHOOK_URL não configurada. Abortando."
+            echo "::error::❌ DISCORD_WEBHOOK_URL is not set. Exiting."
             exit 1
           fi
-          echo "✅ Variável DISCORD_WEBHOOK_URL encontrada."
+          echo "✅ Discord webhook URL found."
 
-      - name: Enviar top 5 notícias do Hacker News para Discord (embed)
+      - name: Send Hacker News Top Stories to Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          NEWS_COUNT: ${{ env.NEWS_COUNT }}
+          EMBED_COLOR: ${{ env.EMBED_COLOR }}
+          TIMEZONE: ${{ env.TIMEZONE }}
         run: |
           python << 'EOF'
           import os
-          import requests
+          import sys
+          import asyncio
+          import httpx
           from datetime import datetime
+          import pytz
 
           WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-          if not WEBHOOK_URL:
-              raise Exception("❌ Variável DISCORD_WEBHOOK_URL não definida.")
+          NEWS_COUNT = int(os.getenv("NEWS_COUNT", 5))
+          EMBED_COLOR = int(os.getenv("EMBED_COLOR", 0xFF6600))
+          TIMEZONE = os.getenv("TIMEZONE", "UTC")
 
-          def get_top_stories(limit=5):
+          def log(msg):
+              now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+              print(f"[{now}] {msg}")
+
+          async def fetch_json(client, url, retries=3):
+              for attempt in range(1, retries+1):
+                  try:
+                      resp = await client.get(url, timeout=10)
+                      resp.raise_for_status()
+                      return resp.json()
+                  except Exception as e:
+                      log(f"⚠️ Tentativa {attempt} falhou para {url}: {e}")
+                      if attempt == retries:
+                          return None
+                      await asyncio.sleep(1)
+
+          async def get_top_story_ids(client):
+              url = "https://hacker-news.firebaseio.com/v0/topstories.json"
+              return await fetch_json(client, url) or []
+
+          async def get_story(client, story_id):
+              url = f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json"
+              return await fetch_json(client, url)
+
+          async def validate_webhook(client, url):
               try:
-                  response = requests.get("https://hacker-news.firebaseio.com/v0/topstories.json", timeout=10)
-                  response.raise_for_status()
-                  return response.json()[:limit]
+                  resp = await client.get(url, timeout=10)
+                  if resp.status_code == 200:
+                      return True
+                  else:
+                      log(f"❌ Webhook URL inválido ou inacessível: Status {resp.status_code}")
+                      return False
               except Exception as e:
-                  raise RuntimeError(f"Erro ao buscar IDs das notícias: {e}")
+                  log(f"❌ Erro ao validar webhook URL: {e}")
+                  return False
 
-          def get_story_details(story_id):
-              try:
-                  resp = requests.get(f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json", timeout=10)
-                  resp.raise_for_status()
-                  return resp.json()
-              except Exception as e:
-                  print(f"⚠️ Erro ao buscar detalhes da notícia {story_id}: {e}")
-                  return None
-
-          def build_discord_embed(stories):
-              current_date = datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
+          def build_embed(stories):
+              tz = pytz.timezone(TIMEZONE)
+              current_time = datetime.now(tz).strftime("%d/%m/%Y %H:%M %Z")
 
               embed = {
-                  "title": "📰 Top 5 Notícias do Hacker News",
+                  "title": "📰 Top Notícias do Hacker News",
                   "url": "https://news.ycombinator.com/",
-                  "color": 0xFF6600,  # Cor laranja do Hacker News
+                  "color": EMBED_COLOR,
                   "footer": {
-                      "text": f"Atualizado em {current_date}"
+                      "text": f"Atualizado em {current_time}"
                   },
                   "fields": []
               }
@@ -85,55 +119,53 @@ jobs:
                   score = story.get("score", "N/A")
                   comments = story.get("descendants", 0)
 
-                  field_value = (
+                  # Limita título para evitar erro no Discord
+                  if len(title) > 256:
+                      title = title[:253] + "..."
+
+                  value = (
                       f"[Link da notícia]({url})\n"
                       f"Autor: **{author}**\n"
                       f"Pontos: **{score}** | Comentários: **{comments}**"
                   )
 
-                  # Limitar título a 256 chars para Discord
-                  field_title = title if len(title) <= 256 else title[:253] + "..."
-
                   embed["fields"].append({
-                      "name": field_title,
-                      "value": field_value,
+                      "name": title,
+                      "value": value,
                       "inline": False
                   })
 
               return embed
 
-          def send_to_discord(webhook_url, embed):
-              payload = {
-                  "embeds": [embed]
-              }
-              response = requests.post(webhook_url, json=payload)
-              try:
-                  response.raise_for_status()
-                  print("✅ Mensagem enviada para o Discord com sucesso!")
-              except Exception as e:
-                  raise RuntimeError(f"Erro ao enviar mensagem para o Discord: {e}")
+          async def send_discord(webhook_url, embed):
+              async with httpx.AsyncClient() as client:
+                  valid = await validate_webhook(client, webhook_url)
+                  if not valid:
+                      raise RuntimeError("Webhook inválido ou inacessível.")
 
-          def main():
-              print("🔍 Buscando top stories do Hacker News...")
-              top_story_ids = get_top_stories()
+                  payload = {"embeds": [embed]}
+                  resp = await client.post(webhook_url, json=payload, timeout=10)
+                  resp.raise_for_status()
+                  log("✅ Mensagem enviada com sucesso para o Discord!")
 
-              stories = []
-              for sid in top_story_ids:
-                  story = get_story_details(sid)
-                  if story:
-                      stories.append(story)
+          async def main():
+              log("🔍 Iniciando coleta das notícias...")
+              async with httpx.AsyncClient() as client:
+                  top_ids = await get_top_story_ids(client)
+                  if not top_ids:
+                      log("⚠️ Nenhum ID de notícia retornado.")
+                      return
 
-              if not stories:
-                  print("⚠️ Nenhuma notícia válida encontrada.")
-                  return
+                  tasks = [get_story(client, sid) for sid in top_ids[:NEWS_COUNT]]
+                  stories = await asyncio.gather(*tasks)
 
-              embed = build_discord_embed(stories)
-              send_to_discord(WEBHOOK_URL, embed)
+              embed = build_embed(stories)
+              await send_discord(WEBHOOK_URL, embed)
 
           if __name__ == "__main__":
               try:
-                  main()
-              except Exception as error:
-                  print(f"❌ Falha ao executar script: {error}")
-                  exit(1)
+                  asyncio.run(main())
+              except Exception as e:
+                  log(f"❌ Erro crítico: {e}")
+                  sys.exit(1)
           EOF
